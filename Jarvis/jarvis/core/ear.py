@@ -6,6 +6,7 @@ work without configuration.
 """
 
 import sys
+import wave
 
 import numpy as np
 import sounddevice as sd
@@ -111,7 +112,92 @@ def listen() -> str:
     return text
 
 
+DIAG_SECONDS = 5.0           # fixed recording length for --diag
+DIAG_WAV_PATH = "debug_mic.wav"
+
+
+def _record_fixed(seconds: float) -> np.ndarray:
+    """Record a fixed duration from the default mic, no silence detection."""
+    frames = int(SAMPLE_RATE * seconds)
+    print(f"[diag] Recording {seconds:.0f}s from the default mic... speak now!")
+    audio = sd.rec(frames, samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="float32")
+    sd.wait()
+    return audio.reshape(-1)
+
+
+def _save_wav(path: str, audio: np.ndarray) -> None:
+    """Write a float32 (-1..1) mono array to a 16-bit PCM WAV file."""
+    pcm = np.clip(audio, -1.0, 1.0)
+    pcm = (pcm * 32767.0).astype("<i2")
+    with wave.open(path, "wb") as wav:
+        wav.setnchannels(CHANNELS)
+        wav.setsampwidth(2)  # 16-bit
+        wav.setframerate(SAMPLE_RATE)
+        wav.writeframes(pcm.tobytes())
+
+
+def diagnose(vad_filter: bool = True) -> None:
+    """Run microphone + transcription diagnostics.
+
+    Isolates whether bad transcription comes from mic capture (too quiet,
+    wrong device) or from the silence-detection cutoff in listen().
+
+    Pass vad_filter=False (--no-vad) to skip Whisper's voice-activity filter,
+    which can strip quiet speech before transcription.
+    """
+    # 1. List all input-capable audio devices.
+    print("\n=== Input audio devices ===")
+    try:
+        default_input = sd.default.device[0]
+    except Exception:  # noqa: BLE001
+        default_input = None
+    for idx, dev in enumerate(sd.query_devices()):
+        if dev["max_input_channels"] > 0:
+            marker = " <- default" if idx == default_input else ""
+            print(f"  [{idx}] {dev['name']} "
+                  f"({dev['max_input_channels']} ch @ {int(dev['default_samplerate'])} Hz)"
+                  f"{marker}")
+
+    # 2. Record a fixed 5 seconds (no silence detection).
+    print("\n=== Recording ===")
+    audio = _record_fixed(DIAG_SECONDS)
+
+    # 3. Report signal level so we can see if the mic is too quiet.
+    if audio.size == 0:
+        print("[diag] No audio captured at all.")
+        return
+    rms = float(np.sqrt(np.mean(np.square(audio))))
+    peak = float(np.max(np.abs(audio)))
+    print("\n=== Signal level ===")
+    print(f"  samples: {audio.size} ({audio.size / SAMPLE_RATE:.2f}s)")
+    print(f"  RMS:  {rms:.5f}")
+    print(f"  peak: {peak:.5f}")
+    if peak < 0.01:
+        print("  WARNING: signal is extremely quiet — mic likely muted, "
+              "wrong device, or gain too low.")
+    elif peak >= 0.99:
+        print("  WARNING: signal is clipping — mic gain too high.")
+    print(f"  (current SILENCE_THRESHOLD for listen() is {SILENCE_THRESHOLD})")
+
+    # 4. Save the recording for playback.
+    _save_wav(DIAG_WAV_PATH, audio)
+    print(f"\n[diag] Saved recording to {DIAG_WAV_PATH} — play it back to verify.")
+
+    # 5. Transcribe and report language + probability.
+    print("\n=== Transcription ===")
+    print(f"  vad_filter: {vad_filter}")
+    segments, info = _model.transcribe(audio, language=None, vad_filter=vad_filter)
+    text = "".join(segment.text for segment in segments).strip()
+    print(f"  detected language: {info.language} (p={info.language_probability:.2f})")
+    print(f"  text: {text!r}")
+    if not text:
+        print("  (transcribed nothing — check the saved WAV and signal level above)")
+
+
 if __name__ == "__main__":
+    if "--diag" in sys.argv[1:]:
+        diagnose(vad_filter="--no-vad" not in sys.argv[1:])
+        sys.exit(0)
     # Quick manual test: python -m core.ear
     print("Say something...")
     print("You said:", listen())
