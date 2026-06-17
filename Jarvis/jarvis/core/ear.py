@@ -116,11 +116,19 @@ DIAG_SECONDS = 5.0           # fixed recording length for --diag
 DIAG_WAV_PATH = "debug_mic.wav"
 
 
-def _record_fixed(seconds: float) -> np.ndarray:
-    """Record a fixed duration from the default mic, no silence detection."""
+def _record_fixed(seconds: float, device: int | None = None) -> np.ndarray:
+    """Record a fixed duration with no silence detection.
+
+    device=None records from the default input; pass an index from the
+    device list to capture from a specific mic.
+    """
     frames = int(SAMPLE_RATE * seconds)
-    print(f"[diag] Recording {seconds:.0f}s from the default mic... speak now!")
-    audio = sd.rec(frames, samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="float32")
+    where = "the default mic" if device is None else f"device [{device}]"
+    print(f"[diag] Recording {seconds:.0f}s from {where}... speak now!")
+    audio = sd.rec(
+        frames, samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="float32",
+        device=device,
+    )
     sd.wait()
     return audio.reshape(-1)
 
@@ -136,14 +144,15 @@ def _save_wav(path: str, audio: np.ndarray) -> None:
         wav.writeframes(pcm.tobytes())
 
 
-def diagnose(vad_filter: bool = True) -> None:
+def diagnose(vad_filter: bool = True, device: int | None = None) -> None:
     """Run microphone + transcription diagnostics.
 
     Isolates whether bad transcription comes from mic capture (too quiet,
     wrong device) or from the silence-detection cutoff in listen().
 
     Pass vad_filter=False (--no-vad) to skip Whisper's voice-activity filter,
-    which can strip quiet speech before transcription.
+    which can strip quiet speech before transcription. Pass device=N
+    (--device N) to record from a specific mic instead of the default.
     """
     # 1. List all input-capable audio devices.
     print("\n=== Input audio devices ===")
@@ -160,7 +169,7 @@ def diagnose(vad_filter: bool = True) -> None:
 
     # 2. Record a fixed 5 seconds (no silence detection).
     print("\n=== Recording ===")
-    audio = _record_fixed(DIAG_SECONDS)
+    audio = _record_fixed(DIAG_SECONDS, device=device)
 
     # 3. Report signal level so we can see if the mic is too quiet.
     if audio.size == 0:
@@ -195,8 +204,17 @@ def diagnose(vad_filter: bool = True) -> None:
 
 
 if __name__ == "__main__":
-    if "--diag" in sys.argv[1:]:
-        diagnose(vad_filter="--no-vad" not in sys.argv[1:])
+    args = sys.argv[1:]
+    if "--diag" in args:
+        device: int | None = None
+        if "--device" in args:
+            try:
+                device = int(args[args.index("--device") + 1])
+            except (IndexError, ValueError):
+                print("error: --device requires an integer index "
+                      "(see the device list from a plain --diag run)")
+                sys.exit(2)
+        diagnose(vad_filter="--no-vad" not in args, device=device)
         sys.exit(0)
     # Quick manual test: python -m core.ear
     print("Say something...")
