@@ -175,6 +175,14 @@ def diagnose(vad_filter: bool = True, device: int | None = None) -> None:
     if audio.size == 0:
         print("[diag] No audio captured at all.")
         return
+    if not np.all(np.isfinite(audio)):
+        bad = int(np.count_nonzero(~np.isfinite(audio)))
+        print("\n=== Signal level ===")
+        print(f"  ERROR: device returned non-finite audio "
+              f"({bad}/{audio.size} samples are NaN/inf).")
+        print("  This is an unusable driver path (e.g. a kernel-streaming "
+              "device handing back garbage) — try a different device index.")
+        return
     rms = float(np.sqrt(np.mean(np.square(audio))))
     peak = float(np.max(np.abs(audio)))
     print("\n=== Signal level ===")
