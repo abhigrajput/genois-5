@@ -1,0 +1,25 @@
+# Jarvis voice assistant — pinned dependencies (Python 3.11, Windows)
+
+# Speech-to-text
+faster-whisper==1.1.1
+
+# Text-to-speech
+edge-tts==7.2.8
+
+# Audio capture (microphone) + numeric processing
+sounddevice==0.5.1
+numpy==1.26.4
+
+# Audio playback for edge-tts mp3 output
+pygame==2.6.1
+
+# Wake-word detection ("hey jarvis")
+openwakeword==0.6.0
+onnxruntime==1.20.1
+
+# LLM backends
+anthropic==0.49.0          # Claude (claude-opus-4-8)
+openai==1.66.3             # MiniMax M3 (OpenAI-compatible endpoint)
+
+# Config / .env loading
+python-dotenv==1.0.1

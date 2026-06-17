@@ -1,0 +1,32 @@
+# Secrets — never commit real keys
+.env
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Packaging / build artifacts
+*.egg-info/
+build/
+dist/
+
+# Downloaded model caches (faster-whisper / Hugging Face)
+.cache/
+models/
+*.bin
+
+# Temporary TTS audio
+*.mp3
+*.wav
+
+# Editor / OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
