@@ -12,22 +12,30 @@ import sys
 
 import config
 from core import brain, mouth
+from core.history import load_history, save_history
 # Note: `ear` and `wake` are imported lazily in voice mode only. Importing
 # `ear` loads the Whisper model at import time, which we must avoid in --text.
 
 
 def text_mode(mute: bool) -> int:
     """Typed-input loop for testing without a mic."""
-    history: list[dict] = []
+    history = load_history()
 
     print("=" * 56)
     print("  Jarvis is ready (text mode).")
+    if history:
+        print(f"  Remembering {len(history) // 2} earlier exchange(s).")
     print("  Type your message. 'quit' or 'exit' to leave; Ctrl+C too.")
     print("=" * 56)
 
     try:
         while True:
-            user_text = input("\nYou: ").strip()
+            try:
+                user_text = input("\nYou: ").strip()
+            except EOFError:
+                # stdin closed (e.g. piped input ran out) -> exit cleanly.
+                print("\n[main] Goodbye!")
+                return 0
             if user_text.lower() in ("quit", "exit"):
                 print("[main] Goodbye!")
                 return 0
@@ -35,6 +43,7 @@ def text_mode(mute: bool) -> int:
                 continue
 
             reply = brain.think(user_text, history)
+            save_history(history)
             print(f"Jarvis: {reply}")
             if not mute:
                 mouth.speak(reply)
@@ -55,7 +64,17 @@ def main() -> int:
         action="store_true",
         help="With --text, print the reply but skip speaking it.",
     )
+    parser.add_argument(
+        "--forget",
+        action="store_true",
+        help="Erase the saved conversation history before starting fresh.",
+    )
     args = parser.parse_args()
+
+    if args.forget:
+        from core.history import clear_history
+        clear_history()
+        print("[main] Forgot the saved conversation history.")
 
     problems = config.validate()
     if problems:
@@ -71,10 +90,12 @@ def main() -> int:
     # Voice mode only — import here so --text never loads Whisper.
     from core import ear, wake
 
-    history: list[dict] = []
+    history = load_history()
 
     print("=" * 56)
     print("  Jarvis is ready.")
+    if history:
+        print(f"  Remembering {len(history) // 2} earlier exchange(s).")
     print("  Say 'hey jarvis' to talk. Press Ctrl+C to quit.")
     print("=" * 56)
 
@@ -90,6 +111,7 @@ def main() -> int:
 
             print(f"You: {user_text}")
             reply = brain.think(user_text, history)
+            save_history(history)
             print(f"Jarvis: {reply}")
             mouth.speak(reply)
     except KeyboardInterrupt:

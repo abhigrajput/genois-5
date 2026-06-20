@@ -25,6 +25,9 @@ models/
 *.mp3
 *.wav
 
+# Saved conversation history (may contain personal content)
+conversation_history.json
+
 # Editor / OS noise
 .vscode/
 .idea/
