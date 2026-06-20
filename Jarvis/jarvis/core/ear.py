@@ -5,15 +5,18 @@ transcribes. Language is auto-detected so Hindi, English, and Hinglish all
 work without configuration.
 """
 
+import math
 import sys
 import wave
 
 import numpy as np
 import sounddevice as sd
 from faster_whisper import WhisperModel
+from scipy.signal import resample_poly
 
 # --- Recording parameters ---
-SAMPLE_RATE = 16000          # Whisper expects 16 kHz mono
+WHISPER_RATE = 16000         # Whisper expects 16 kHz mono
+SAMPLE_RATE = WHISPER_RATE   # backwards-compatible alias for the target rate
 CHANNELS = 1
 BLOCK_SECONDS = 0.1          # length of each captured audio block
 SILENCE_SECONDS = 2.0        # stop after this much trailing silence
@@ -23,6 +26,11 @@ START_TIMEOUT_SECONDS = 10.0 # give up if the user never starts speaking
 # RMS amplitude (float32, range -1..1) above which a block counts as speech.
 # Tune up if a noisy room keeps triggering, down if soft speech is missed.
 SILENCE_THRESHOLD = 0.01
+
+# Transcription language. Auto-detect (None) is unreliable on short clips with
+# the int8 CPU model — it once mislabelled Hindi speech as Malayalam — so we
+# pin it. Whisper still transcribes Hinglish (mixed English words) under "hi".
+LANGUAGE = "hi"
 
 
 def _load_model() -> WhisperModel:
@@ -42,9 +50,38 @@ def _load_model() -> WhisperModel:
 _model = _load_model()
 
 
+def _native_sample_rate(device: int | None = None) -> int:
+    """Return the input device's native default sample rate in Hz.
+
+    Mic arrays (e.g. Intel Smart Sound) run at 44100/48000 Hz natively.
+    Opening a stream at 16 kHz makes some drivers hand back slowed-down
+    audio, so we always capture at the device's own rate and resample.
+    """
+    info = sd.query_devices(kind="input") if device is None \
+        else sd.query_devices(device)
+    rate = int(round(info["default_samplerate"]))
+    return rate if rate > 0 else WHISPER_RATE
+
+
+def _resample_to_whisper(audio: np.ndarray, src_rate: int) -> np.ndarray:
+    """Resample float32 mono audio from src_rate down to 16 kHz for Whisper."""
+    if audio.size == 0 or src_rate == WHISPER_RATE:
+        return audio.astype(np.float32, copy=False)
+    g = math.gcd(src_rate, WHISPER_RATE)
+    up = WHISPER_RATE // g
+    down = src_rate // g
+    resampled = resample_poly(audio, up, down)
+    return resampled.astype(np.float32, copy=False)
+
+
 def _record_until_silence() -> np.ndarray:
-    """Capture mic audio until trailing silence and return a float32 array."""
-    block_size = int(SAMPLE_RATE * BLOCK_SECONDS)
+    """Capture mic audio until trailing silence and return a float32 array.
+
+    Records at the input device's native sample rate and resamples the
+    result to 16 kHz so Whisper receives speech at the correct pitch/speed.
+    """
+    native_rate = _native_sample_rate()
+    block_size = int(native_rate * BLOCK_SECONDS)
     silence_blocks_needed = int(SILENCE_SECONDS / BLOCK_SECONDS)
     max_blocks = int(MAX_SECONDS / BLOCK_SECONDS)
     start_timeout_blocks = int(START_TIMEOUT_SECONDS / BLOCK_SECONDS)
@@ -55,7 +92,7 @@ def _record_until_silence() -> np.ndarray:
     blocks_seen = 0
 
     with sd.InputStream(
-        samplerate=SAMPLE_RATE,
+        samplerate=native_rate,
         channels=CHANNELS,
         dtype="float32",
         blocksize=block_size,
@@ -86,7 +123,7 @@ def _record_until_silence() -> np.ndarray:
 
     if not chunks:
         return np.zeros(0, dtype=np.float32)
-    return np.concatenate(chunks)
+    return _resample_to_whisper(np.concatenate(chunks), native_rate)
 
 
 def listen() -> str:
@@ -101,8 +138,7 @@ def listen() -> str:
         print("[ear] No speech detected.")
         return ""
 
-    # language=None -> auto-detect (handles Hindi / English / Hinglish).
-    segments, info = _model.transcribe(audio, language=None, vad_filter=True)
+    segments, info = _model.transcribe(audio, language=LANGUAGE, vad_filter=True)
     text = "".join(segment.text for segment in segments).strip()
 
     if text:
@@ -120,17 +156,20 @@ def _record_fixed(seconds: float, device: int | None = None) -> np.ndarray:
     """Record a fixed duration with no silence detection.
 
     device=None records from the default input; pass an index from the
-    device list to capture from a specific mic.
+    device list to capture from a specific mic. Captures at the device's
+    native sample rate and resamples to 16 kHz for Whisper.
     """
-    frames = int(SAMPLE_RATE * seconds)
+    native_rate = _native_sample_rate(device)
+    frames = int(native_rate * seconds)
     where = "the default mic" if device is None else f"device [{device}]"
-    print(f"[diag] Recording {seconds:.0f}s from {where}... speak now!")
+    print(f"[diag] Recording {seconds:.0f}s from {where} at {native_rate} Hz"
+          f" (-> {WHISPER_RATE} Hz)... speak now!")
     audio = sd.rec(
-        frames, samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="float32",
+        frames, samplerate=native_rate, channels=CHANNELS, dtype="float32",
         device=device,
     )
     sd.wait()
-    return audio.reshape(-1)
+    return _resample_to_whisper(audio.reshape(-1), native_rate)
 
 
 def _save_wav(path: str, audio: np.ndarray) -> None:
@@ -203,7 +242,7 @@ def diagnose(vad_filter: bool = True, device: int | None = None) -> None:
     # 5. Transcribe and report language + probability.
     print("\n=== Transcription ===")
     print(f"  vad_filter: {vad_filter}")
-    segments, info = _model.transcribe(audio, language=None, vad_filter=vad_filter)
+    segments, info = _model.transcribe(audio, language=LANGUAGE, vad_filter=vad_filter)
     text = "".join(segment.text for segment in segments).strip()
     print(f"  detected language: {info.language} (p={info.language_probability:.2f})")
     print(f"  text: {text!r}")

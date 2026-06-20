@@ -9,6 +9,7 @@ edge-tts==7.2.8
 # Audio capture (microphone) + numeric processing
 sounddevice==0.5.1
 numpy==1.26.4
+scipy==1.17.1              # resample mic audio (native rate -> 16 kHz)
 
 # Audio playback for edge-tts mp3 output
 pygame==2.6.1
