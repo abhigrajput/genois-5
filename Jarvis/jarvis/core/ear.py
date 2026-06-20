@@ -1,8 +1,9 @@
 """Speech-to-text for Jarvis using faster-whisper.
 
 Records from the default microphone until ~2 seconds of silence, then
-transcribes. Language is auto-detected so Hindi, English, and Hinglish all
-work without configuration.
+transcribes. The language is pinned (not auto-detected) because auto-detect is
+unreliable on short int8 CPU clips — it once mislabelled clean speech as
+Malayalam and produced gibberish. Set WHISPER_LANGUAGE in .env to override.
 """
 
 import math
@@ -13,6 +14,8 @@ import numpy as np
 import sounddevice as sd
 from faster_whisper import WhisperModel
 from scipy.signal import resample_poly
+
+import config
 
 # --- Recording parameters ---
 WHISPER_RATE = 16000         # Whisper expects 16 kHz mono
@@ -28,22 +31,25 @@ START_TIMEOUT_SECONDS = 10.0 # give up if the user never starts speaking
 SILENCE_THRESHOLD = 0.01
 
 # Transcription language. Auto-detect (None) is unreliable on short clips with
-# the int8 CPU model — it once mislabelled Hindi speech as Malayalam — so we
-# pin it. Whisper still transcribes Hinglish (mixed English words) under "hi".
-LANGUAGE = "hi"
+# the int8 CPU model — it once mislabelled clean speech as Malayalam — so we
+# pin it via WHISPER_LANGUAGE in .env (default "en"). The initial prompt below
+# nudges Whisper toward Hinglish so mixed Hindi/English words transcribe well.
+LANGUAGE = config.WHISPER_LANGUAGE
+INITIAL_PROMPT = "This is a mix of Hindi and English (Hinglish)."
 
 
 def _load_model() -> WhisperModel:
-    """Load the 'medium' model on CUDA if available, else CPU."""
-    try:
-        model = WhisperModel("medium", device="cuda", compute_type="float16")
-        print("[ear] Loaded Whisper 'medium' on CUDA (float16).")
-        return model
-    except Exception as exc:  # noqa: BLE001 - any CUDA/driver issue -> fall back
-        print(f"[ear] CUDA unavailable ({exc}); loading on CPU.")
-        model = WhisperModel("medium", device="cpu", compute_type="int8")
-        print("[ear] Loaded Whisper 'medium' on CPU (int8).")
-        return model
+    """Load the 'small' model on CPU (int8).
+
+    This machine has only an Intel Iris Xe GPU — no NVIDIA/CUDA — so we run
+    purely on CPU. 'small' (vs 'medium') trades a little accuracy for much
+    faster int8 transcription; cpu_threads=4 parallelises the inference.
+    """
+    model = WhisperModel(
+        "small", device="cpu", compute_type="int8", cpu_threads=4
+    )
+    print("[ear] Loaded Whisper 'small' on CPU (int8, 4 threads).")
+    return model
 
 
 # Load once at import time — model loading is slow and should not repeat.
@@ -138,7 +144,9 @@ def listen() -> str:
         print("[ear] No speech detected.")
         return ""
 
-    segments, info = _model.transcribe(audio, language=LANGUAGE, vad_filter=True)
+    segments, info = _model.transcribe(
+        audio, language=LANGUAGE, initial_prompt=INITIAL_PROMPT, vad_filter=True
+    )
     text = "".join(segment.text for segment in segments).strip()
 
     if text:
@@ -148,7 +156,7 @@ def listen() -> str:
     return text
 
 
-DIAG_SECONDS = 5.0           # fixed recording length for --diag
+DIAG_SECONDS = 12.0          # fixed recording length for --diag
 DIAG_WAV_PATH = "debug_mic.wav"
 
 
@@ -242,7 +250,10 @@ def diagnose(vad_filter: bool = True, device: int | None = None) -> None:
     # 5. Transcribe and report language + probability.
     print("\n=== Transcription ===")
     print(f"  vad_filter: {vad_filter}")
-    segments, info = _model.transcribe(audio, language=LANGUAGE, vad_filter=vad_filter)
+    print(f"  language (pinned): {LANGUAGE}")
+    segments, info = _model.transcribe(
+        audio, language=LANGUAGE, initial_prompt=INITIAL_PROMPT, vad_filter=vad_filter
+    )
     text = "".join(segment.text for segment in segments).strip()
     print(f"  detected language: {info.language} (p={info.language_probability:.2f})")
     print(f"  text: {text!r}")
