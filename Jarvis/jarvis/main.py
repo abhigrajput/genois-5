@@ -12,9 +12,43 @@ import sys
 
 import config
 from core import brain, mouth
-from core.history import load_history, save_history
+from core.history import clear_history, load_history, save_history
 # Note: `ear` and `wake` are imported lazily in voice mode only. Importing
 # `ear` loads the Whisper model at import time, which we must avoid in --text.
+
+# Spoken/typed phrases that make Jarvis wipe its memory mid-conversation.
+# Substrings are matched against the lowercased input, so they catch longer
+# sentences like "Jarvis, forget everything we talked about". Hinglish/Hindi
+# variants are included since the assistant is bilingual. "forget it" is left
+# out on purpose — it usually means "never mind", not "erase memory".
+_FORGET_TRIGGERS = (
+    "forget everything", "forget all", "forget our", "forget this conversation",
+    "forget the conversation", "forget what we", "forget our chat",
+    "clear history", "clear the history", "clear memory", "clear your memory",
+    "erase history", "erase memory", "erase your memory", "reset memory",
+    "start fresh", "start a new conversation", "new conversation",
+    # Hinglish / Hindi
+    "bhool jao", "bhool jaao", "bhula do", "sab bhool", "sab kuch bhool",
+    "sabkuch bhool", "yaad mat rakhna", "history clear", "memory clear",
+)
+
+# What Jarvis says (and speaks) after wiping its memory.
+_FORGET_REPLY = "Theek hai, maine sab kuch bhula diya. We're starting fresh!"
+
+
+def _is_forget_command(text: str) -> bool:
+    """True if `text` is a request to wipe the conversation memory."""
+    lowered = text.lower()
+    return any(trigger in lowered for trigger in _FORGET_TRIGGERS)
+
+
+def _handle_forget(history: list[dict], speak: bool) -> None:
+    """Wipe in-memory and on-disk history, then acknowledge."""
+    history.clear()          # empties the list brain.think() shares
+    clear_history()          # deletes the saved file
+    print(f"Jarvis: {_FORGET_REPLY}")
+    if speak:
+        mouth.speak(_FORGET_REPLY)
 
 
 def text_mode(mute: bool) -> int:
@@ -40,6 +74,9 @@ def text_mode(mute: bool) -> int:
                 print("[main] Goodbye!")
                 return 0
             if not user_text:
+                continue
+            if _is_forget_command(user_text):
+                _handle_forget(history, speak=not mute)
                 continue
 
             reply = brain.think(user_text, history)
@@ -72,7 +109,6 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.forget:
-        from core.history import clear_history
         clear_history()
         print("[main] Forgot the saved conversation history.")
 
@@ -110,6 +146,10 @@ def main() -> int:
                 continue
 
             print(f"You: {user_text}")
+            if _is_forget_command(user_text):
+                _handle_forget(history, speak=True)
+                continue
+
             reply = brain.think(user_text, history)
             save_history(history)
             print(f"Jarvis: {reply}")
