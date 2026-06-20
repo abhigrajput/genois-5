@@ -28,6 +28,9 @@ models/
 # Saved conversation history (may contain personal content)
 conversation_history.json
 
+# Saved user profile (name, etc.)
+user_profile.json
+
 # Editor / OS noise
 .vscode/
 .idea/

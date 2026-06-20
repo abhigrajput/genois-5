@@ -8,10 +8,11 @@ and Whisper). Add --mute to also skip speaking, for fast brain testing.
 """
 
 import argparse
+import re
 import sys
 
 import config
-from core import brain, mouth
+from core import brain, mouth, profile
 from core.history import clear_history, load_history, save_history
 # Note: `ear` and `wake` are imported lazily in voice mode only. Importing
 # `ear` loads the Whisper model at import time, which we must avoid in --text.
@@ -35,6 +36,35 @@ _FORGET_TRIGGERS = (
 # What Jarvis says (and speaks) after wiping its memory.
 _FORGET_REPLY = "Theek hai, maine sab kuch bhula diya. We're starting fresh!"
 
+# Phrases that ask Jarvis to recall the user's name -> answered instantly from
+# the saved profile, no LLM call.
+_NAME_QUERY_TRIGGERS = (
+    "what's my name", "whats my name", "what is my name", "do you know my name",
+    "tell me my name", "say my name", "who am i",
+    "mera naam kya hai", "mera naam batao", "mera naam bata",
+    "tum mera naam jaante ho", "kya tumhe mera naam pata",
+)
+
+# High-precision patterns for capturing the user's name when they state it.
+# Deliberately narrow (no bare "I am ..."/"main ... hoon") to avoid grabbing
+# words from "I am fine" / "main theek hoon".
+_NAME_CAPTURE_PATTERNS = (
+    re.compile(r"\bmy name is ([a-z][a-z'-]*)", re.IGNORECASE),
+    re.compile(r"\bcall me ([a-z][a-z'-]*)", re.IGNORECASE),
+    re.compile(r"\bmera naam ([a-z][a-z'-]*)", re.IGNORECASE),
+)
+
+# Never store these as a name (they show up right after "mera naam" in a
+# question like "mera naam kya hai").
+_NAME_STOPWORDS = {"kya", "what", "batao", "bata", "hai", "kaun", "who", "tum"}
+
+
+def _quick_say(reply: str, speak: bool) -> None:
+    """Print (and optionally speak) a reply that bypasses the LLM."""
+    print(f"Jarvis: {reply}")
+    if speak:
+        mouth.speak(reply)
+
 
 def _is_forget_command(text: str) -> bool:
     """True if `text` is a request to wipe the conversation memory."""
@@ -43,12 +73,36 @@ def _is_forget_command(text: str) -> bool:
 
 
 def _handle_forget(history: list[dict], speak: bool) -> None:
-    """Wipe in-memory and on-disk history, then acknowledge."""
+    """Wipe in-memory and on-disk history plus the profile, then acknowledge."""
     history.clear()          # empties the list brain.think() shares
-    clear_history()          # deletes the saved file
-    print(f"Jarvis: {_FORGET_REPLY}")
-    if speak:
-        mouth.speak(_FORGET_REPLY)
+    clear_history()          # deletes the saved history file
+    profile.clear_profile()  # also forget the user's name
+    _quick_say(_FORGET_REPLY, speak)
+
+
+def _is_name_query(text: str) -> bool:
+    """True if `text` is asking Jarvis to recall the user's name."""
+    lowered = text.lower()
+    return any(trigger in lowered for trigger in _NAME_QUERY_TRIGGERS)
+
+
+def _name_reply() -> str:
+    """The quick reply for 'what's my name?', from the saved profile."""
+    name = profile.get_name()
+    if name:
+        return f"Aapka naam {name} hai!"
+    return "Mujhe abhi aapka naam nahi pata. Bas kahiye 'my name is ...' aur main yaad rakhunga."
+
+
+def _capture_name(text: str) -> None:
+    """If `text` states the user's name, save it to the profile (silently)."""
+    for pattern in _NAME_CAPTURE_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            candidate = match.group(1).strip()
+            if candidate.lower() not in _NAME_STOPWORDS:
+                profile.set_name(candidate.capitalize())
+            return
 
 
 def text_mode(mute: bool) -> int:
@@ -78,7 +132,11 @@ def text_mode(mute: bool) -> int:
             if _is_forget_command(user_text):
                 _handle_forget(history, speak=not mute)
                 continue
+            if _is_name_query(user_text):
+                _quick_say(_name_reply(), speak=not mute)
+                continue
 
+            _capture_name(user_text)
             reply = brain.think(user_text, history)
             save_history(history)
             print(f"Jarvis: {reply}")
@@ -90,6 +148,14 @@ def text_mode(mute: bool) -> int:
 
 
 def main() -> int:
+    # Windows consoles default to cp1252, which raises UnicodeEncodeError when a
+    # reply contains Hinglish/Devanagari/emoji characters. Force UTF-8 so any
+    # reply prints safely instead of crashing the assistant.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
     parser = argparse.ArgumentParser(description="Jarvis voice assistant.")
     parser.add_argument(
         "--text",
@@ -149,7 +215,11 @@ def main() -> int:
             if _is_forget_command(user_text):
                 _handle_forget(history, speak=True)
                 continue
+            if _is_name_query(user_text):
+                _quick_say(_name_reply(), speak=True)
+                continue
 
+            _capture_name(user_text)
             reply = brain.think(user_text, history)
             save_history(history)
             print(f"Jarvis: {reply}")
