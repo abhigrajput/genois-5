@@ -13,7 +13,7 @@ import sys
 from datetime import datetime
 
 import config
-from core import brain, hands, intent, mentor, mentor_brain, mouth, profile
+from core import brain, hands, intent, mentor, mentor_brain, mouth, profile, scheduler
 from core.history import clear_history, load_history, save_history
 # Note: `ear` and `wake` are imported lazily in voice mode only. Importing
 # `ear` loads the Whisper model at import time, which we must avoid in --text.
@@ -163,6 +163,33 @@ def _is_snooze_command(text: str) -> bool:
     return any(trigger in lowered for trigger in _SNOOZE_TRIGGERS)
 
 
+# Phrases that turn the Phase 4 background scheduler off / on. Specific enough
+# not to fire on ordinary "thoda pause karo" chatter.
+_PAUSE_SCHEDULE_TRIGGERS = (
+    "pause schedule", "pause the schedule", "stop schedule", "stop the schedule",
+    "schedule band karo", "schedule band kar do", "schedule band",
+)
+_RESUME_SCHEDULE_TRIGGERS = (
+    "resume schedule", "resume the schedule", "start schedule", "start the schedule",
+    "schedule chalu karo", "schedule chalu kar do", "schedule chalu",
+)
+
+_PAUSE_SCHEDULE_REPLY = "Schedule band kar diya. Background nudges ab nahi aayenge."
+_RESUME_SCHEDULE_REPLY = "Schedule chalu kar diya. Ab main time pe nudge karunga."
+
+
+def _is_pause_schedule_command(text: str) -> bool:
+    """True if `text` asks to disable the background scheduler."""
+    lowered = text.lower()
+    return any(trigger in lowered for trigger in _PAUSE_SCHEDULE_TRIGGERS)
+
+
+def _is_resume_schedule_command(text: str) -> bool:
+    """True if `text` asks to (re-)enable the background scheduler."""
+    lowered = text.lower()
+    return any(trigger in lowered for trigger in _RESUME_SCHEDULE_TRIGGERS)
+
+
 def _confront_on_startup(speak: bool) -> None:
     """Open with the mentor's confrontation if anything is overdue.
 
@@ -228,6 +255,10 @@ def text_mode(mute: bool) -> int:
     print("=" * 56)
 
     _confront_on_startup(speak=not mute)
+    # Start the background scheduler AFTER the startup confrontation so the two
+    # don't talk over each other on launch. Jobs run on their own thread, so the
+    # input loop below keeps accepting typing while they fire.
+    scheduler.start_scheduler(speak=not mute)
 
     try:
         while True:
@@ -257,6 +288,14 @@ def text_mode(mute: bool) -> int:
             if _is_snooze_command(user_text):
                 profile.snooze_confrontation()
                 _quick_say(_SNOOZE_REPLY, speak=not mute)
+                continue
+            if _is_pause_schedule_command(user_text):
+                scheduler.pause_scheduler()
+                _quick_say(_PAUSE_SCHEDULE_REPLY, speak=not mute)
+                continue
+            if _is_resume_schedule_command(user_text):
+                scheduler.resume_scheduler()
+                _quick_say(_RESUME_SCHEDULE_REPLY, speak=not mute)
                 continue
 
             _handle_input(user_text, history, speak=not mute)
@@ -320,6 +359,9 @@ def main() -> int:
     print("=" * 56)
 
     _confront_on_startup(speak=True)
+    # Start the background scheduler AFTER the startup confrontation. Jobs fire
+    # on their own thread, so the wake-word loop below is never blocked by them.
+    scheduler.start_scheduler(speak=True)
 
     try:
         while True:
@@ -347,6 +389,14 @@ def main() -> int:
             if _is_snooze_command(user_text):
                 profile.snooze_confrontation()
                 _quick_say(_SNOOZE_REPLY, speak=True)
+                continue
+            if _is_pause_schedule_command(user_text):
+                scheduler.pause_scheduler()
+                _quick_say(_PAUSE_SCHEDULE_REPLY, speak=True)
+                continue
+            if _is_resume_schedule_command(user_text):
+                scheduler.resume_scheduler()
+                _quick_say(_RESUME_SCHEDULE_REPLY, speak=True)
                 continue
 
             _handle_input(user_text, history, speak=True)

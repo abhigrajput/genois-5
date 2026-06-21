@@ -8,6 +8,7 @@ a temporary mp3 and played back through pygame.
 import asyncio
 import os
 import tempfile
+import threading
 
 import edge_tts
 import pygame
@@ -16,6 +17,12 @@ VOICE = "hi-IN-SwaraNeural"
 
 # Initialize the audio mixer once.
 pygame.mixer.init()
+
+# Serializes access to the single pygame music channel. Phase 4's scheduler
+# speaks from background threads, so a timed job can call speak() while the main
+# loop is mid-utterance. Without this lock the second playback would load over
+# the first and cut it off; the lock makes the job wait its turn instead.
+_playback_lock = threading.Lock()
 
 
 async def _synthesize(text: str, out_path: str) -> None:
@@ -46,8 +53,13 @@ def speak(text: str) -> None:
     fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
     os.close(fd)
     try:
+        # Synthesis writes to a per-call temp file, so it's safe to run
+        # unsynchronized. Only the shared pygame mixer needs serializing — hold
+        # the lock just for playback so a background job waits for the current
+        # utterance to finish instead of cutting it off.
         asyncio.run(_synthesize(text, tmp_path))
-        _play(tmp_path)
+        with _playback_lock:
+            _play(tmp_path)
     finally:
         try:
             os.remove(tmp_path)

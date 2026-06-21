@@ -1,0 +1,10 @@
+{
+  "morning_briefing_time": "08:00",
+  "morning_apps": ["chrome"],
+  "morning_apps_time": "08:05",
+  "work_nudge_interval_hours": 2,
+  "work_nudge_start": "10:00",
+  "work_nudge_end": "20:00",
+  "evening_checkin_time": "21:00",
+  "enabled": true
+}
