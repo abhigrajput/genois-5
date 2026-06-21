@@ -124,6 +124,69 @@ def mentor_reply(user_text: str, history: list[dict]) -> str:
     return reply
 
 
+def _fallback_confrontation(overdue: list[dict]) -> str:
+    """A terse, non-LLM confrontation naming the overdue items.
+
+    Used when the Claude call for the startup opener fails, so the confrontation
+    still happens (the whole point is to not let an overdue item slide silently).
+    """
+    descs = ", ".join((c.get("description") or "commitment") for c in overdue[:3])
+    extra = " aur baaki bhi." if len(overdue) > 3 else ""
+    return f"Abhishek, ye overdue hai: {descs}{extra} Kya hua? Explain karo."
+
+
+def startup_confrontation() -> str:
+    """One-shot mentor opener for when Jarvis launches, or "" if nothing's overdue.
+
+    If any commitment is overdue, returns a short, brutal line that names the
+    overdue item(s) and demands an explanation — the mentor confronting Abhishek
+    the moment Jarvis starts, before he says anything. When nothing is overdue
+    (or the store is disabled/unconfigured) returns "" so the caller stays silent
+    and starts normally.
+
+    Deliberately does NOT touch conversation history: persisting a lone assistant
+    turn would break the user-first message ordering mentor_reply/brain.think
+    expect. The overdue context is re-pulled every turn anyway, so a reply to this
+    opener still lands with full context.
+    """
+    overdue = mentor.get_overdue_commitments()
+    if not overdue:
+        return ""
+
+    # Same persona + a freshly-pulled commitments block (which already lists the
+    # overdue items), plus a one-off directive to OPEN the conversation unprompted.
+    instruction = (
+        "Jarvis just started up and Abhishek has not said anything yet. Open the "
+        "conversation YOURSELF with one or two short, brutally direct sentences "
+        "that name his overdue commitment(s) and demand an explanation. No "
+        "greeting, no preamble, no softening. For example: \"Abhishek, kal ka "
+        "GENOIS target miss hua. 5 users. Kya hua?\""
+    )
+    system = [
+        {"type": "text", "text": MENTOR_SYSTEM_PROMPT},
+        {"type": "text", "text": _format_context()},
+    ]
+    messages = [{"role": "user", "content": instruction}]
+
+    try:
+        resp = _client.messages.create(
+            model=config.CLAUDE_MODEL,
+            max_tokens=1024,
+            system=system,
+            thinking={"type": "adaptive"},
+            messages=messages,
+            timeout=API_TIMEOUT,
+        )
+        reply = "".join(b.text for b in resp.content if b.type == "text").strip()
+    except Exception as exc:  # noqa: BLE001 - never let the opener crash startup
+        print(f"[mentor_brain] startup confrontation failed: {exc}")
+        return _fallback_confrontation(overdue)
+
+    # An empty model reply still means there's something overdue — fall back so
+    # the confrontation isn't silently dropped.
+    return reply or _fallback_confrontation(overdue)
+
+
 if __name__ == "__main__":
     # Quick manual test: python -m core.mentor_brain
     convo: list[dict] = []

@@ -143,6 +143,18 @@ def _is_brief_command(text: str) -> bool:
     return any(trigger in lowered for trigger in _BRIEF_TRIGGERS)
 
 
+def _confront_on_startup(speak: bool) -> None:
+    """Open with the mentor's confrontation if anything is overdue.
+
+    Called once after Jarvis loads (voice and text mode), before waiting for any
+    input. If a commitment is overdue, the mentor immediately speaks a short,
+    brutal line naming it; otherwise this is silent and Jarvis starts normally.
+    """
+    opener = mentor_brain.startup_confrontation()
+    if opener:
+        _quick_say(opener, speak)
+
+
 def _handle_input(user_text: str, history: list[dict], speak: bool) -> None:
     """Route a normal turn: a PC action runs via hands, else brain.think() talks.
 
@@ -187,6 +199,8 @@ def text_mode(mute: bool) -> int:
         print(f"  Remembering {len(history) // 2} earlier exchange(s).")
     print("  Type your message. 'quit' or 'exit' to leave; Ctrl+C too.")
     print("=" * 56)
+
+    _confront_on_startup(speak=not mute)
 
     try:
         while True:
@@ -273,6 +287,8 @@ def main() -> int:
         print(f"  Remembering {len(history) // 2} earlier exchange(s).")
     print("  Say 'hey jarvis' to talk. Press Ctrl+C to quit.")
     print("=" * 56)
+
+    _confront_on_startup(speak=True)
 
     try:
         while True:
