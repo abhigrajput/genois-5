@@ -10,11 +10,40 @@ Two backends:
 """
 
 import re
+import traceback
 
 import anthropic
 from openai import OpenAI
 
 import config
+
+# Hard ceiling on every network call so a stalled backend can never hang the
+# whole assistant. Both SDKs accept a per-request `timeout` (seconds).
+API_TIMEOUT = 30
+
+
+def _mask_key(key: str) -> str:
+    """Show only the last 4 chars of an API key for safe logging."""
+    if not key:
+        return "<missing>"
+    if len(key) <= 4:
+        return "****"
+    return f"****{key[-4:]}"
+
+
+def _print_api_error(backend: str, exc: Exception) -> None:
+    """Print the FULL error (status code + message) so it never hangs silently."""
+    status = getattr(exc, "status_code", None)
+    print(f"[brain] {backend} API call FAILED.")
+    print(f"[brain]   type:        {type(exc).__name__}")
+    if status is not None:
+        print(f"[brain]   status_code: {status}")
+    print(f"[brain]   message:     {exc}")
+    # Some SDK errors carry a structured body with more detail.
+    body = getattr(exc, "body", None)
+    if body is not None:
+        print(f"[brain]   body:        {body}")
+    traceback.print_exc()
 
 SYSTEM_PROMPT = (
     "You are Jarvis, a friendly bilingual voice assistant. The user may speak "
@@ -69,11 +98,22 @@ def _ask_minimax(user_text: str, history: list[dict]) -> str:
     messages.extend(history)
     messages.append({"role": "user", "content": user_text})
 
-    resp = _minimax.chat.completions.create(
-        model=config.MINIMAX_MODEL,
-        messages=messages,
-        max_tokens=512,
+    print(
+        f"[brain]   base_url={config.MINIMAX_BASE_URL} "
+        f"model={config.MINIMAX_MODEL} key={_mask_key(config.MINIMAX_API_KEY)}"
     )
+
+    try:
+        resp = _minimax.chat.completions.create(
+            model=config.MINIMAX_MODEL,
+            messages=messages,
+            max_tokens=512,
+            timeout=API_TIMEOUT,
+        )
+    except Exception as exc:  # noqa: BLE001 - surface backend errors, never hang
+        _print_api_error("minimax", exc)
+        raise
+
     return (resp.choices[0].message.content or "").strip()
 
 
@@ -82,13 +122,18 @@ def _ask_claude(user_text: str, history: list[dict]) -> str:
     messages = list(history)
     messages.append({"role": "user", "content": user_text})
 
-    resp = _claude.messages.create(
-        model=config.CLAUDE_MODEL,
-        max_tokens=1024,
-        system=SYSTEM_PROMPT,
-        thinking={"type": "adaptive"},
-        messages=messages,
-    )
+    try:
+        resp = _claude.messages.create(
+            model=config.CLAUDE_MODEL,
+            max_tokens=1024,
+            system=SYSTEM_PROMPT,
+            thinking={"type": "adaptive"},
+            messages=messages,
+            timeout=API_TIMEOUT,
+        )
+    except Exception as exc:  # noqa: BLE001 - surface backend errors, never hang
+        _print_api_error("claude", exc)
+        raise
 
     # Skip thinking blocks; return the visible text.
     parts = [block.text for block in resp.content if block.type == "text"]

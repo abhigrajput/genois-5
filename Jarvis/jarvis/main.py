@@ -10,9 +10,10 @@ and Whisper). Add --mute to also skip speaking, for fast brain testing.
 import argparse
 import re
 import sys
+from datetime import datetime
 
 import config
-from core import brain, mouth, profile
+from core import brain, hands, intent, mentor, mentor_brain, mouth, profile
 from core.history import clear_history, load_history, save_history
 # Note: `ear` and `wake` are imported lazily in voice mode only. Importing
 # `ear` loads the Whisper model at import time, which we must avoid in --text.
@@ -105,6 +106,77 @@ def _capture_name(text: str) -> None:
             return
 
 
+# Phrases that ask for the current time -> answered instantly from the system
+# clock, no LLM call.
+_TIME_QUERY_TRIGGERS = (
+    "what's the time", "whats the time", "what is the time", "what time is it",
+    "tell me the time", "current time", "the time right now",
+    "samay kya hai", "time kya hai", "kitne baje", "abhi kya time",
+)
+
+
+def _is_time_query(text: str) -> bool:
+    """True if `text` is asking for the current time."""
+    lowered = text.lower()
+    return any(trigger in lowered for trigger in _TIME_QUERY_TRIGGERS)
+
+
+def _time_reply() -> str:
+    """The quick reply for 'what's the time?', from the system clock."""
+    # 12-hour clock without a leading zero (e.g. "3:45 PM"), read-aloud friendly.
+    now = datetime.now().strftime("%I:%M %p").lstrip("0")
+    return f"Abhi {now} ho rahe hain."
+
+
+# Phrases that ask the mentor for the daily accountability briefing -> answered
+# directly from the Supabase store (core/mentor), no LLM call.
+_BRIEF_TRIGGERS = (
+    "brief me", "brief karo", "mujhe brief karo", "daily briefing", "give me a briefing",
+    "what's on my plate", "whats on my plate", "my commitments", "what are my commitments",
+    "mera briefing", "aaj ka briefing", "mujhe brief kar do",
+)
+
+
+def _is_brief_command(text: str) -> bool:
+    """True if `text` is asking for the daily accountability briefing."""
+    lowered = text.lower()
+    return any(trigger in lowered for trigger in _BRIEF_TRIGGERS)
+
+
+def _handle_input(user_text: str, history: list[dict], speak: bool) -> None:
+    """Route a normal turn: a PC action runs via hands, else brain.think() talks.
+
+    Quick replies (forget/name/time) are handled by the callers before this; by
+    the time we get here the turn is either a computer command or conversation.
+    """
+    _capture_name(user_text)
+
+    decision = intent.classify(user_text)
+    if decision["type"] == "action":
+        # Run the command, then speak a short confirmation. History is left
+        # untouched — actions aren't conversation turns.
+        reply = hands.run(decision["function"], decision.get("args"))
+    elif decision["type"] == "mentor":
+        # Store any concrete commitment FIRST so the mentor's context (pulled
+        # fresh inside mentor_reply) already reflects what he just promised.
+        commitment = decision.get("commitment")
+        if commitment:
+            mentor.add_commitment(
+                commitment["category"],
+                commitment["description"],
+                commitment.get("due_date"),
+            )
+        reply = mentor_brain.mentor_reply(user_text, history)
+        save_history(history)
+    else:
+        reply = brain.think(user_text, history)
+        save_history(history)
+
+    print(f"Jarvis: {reply}")
+    if speak:
+        mouth.speak(reply)
+
+
 def text_mode(mute: bool) -> int:
     """Typed-input loop for testing without a mic."""
     history = load_history()
@@ -135,13 +207,14 @@ def text_mode(mute: bool) -> int:
             if _is_name_query(user_text):
                 _quick_say(_name_reply(), speak=not mute)
                 continue
+            if _is_time_query(user_text):
+                _quick_say(_time_reply(), speak=not mute)
+                continue
+            if _is_brief_command(user_text):
+                _quick_say(mentor.daily_briefing(), speak=not mute)
+                continue
 
-            _capture_name(user_text)
-            reply = brain.think(user_text, history)
-            save_history(history)
-            print(f"Jarvis: {reply}")
-            if not mute:
-                mouth.speak(reply)
+            _handle_input(user_text, history, speak=not mute)
     except KeyboardInterrupt:
         print("\n[main] Goodbye!")
         return 0
@@ -218,12 +291,14 @@ def main() -> int:
             if _is_name_query(user_text):
                 _quick_say(_name_reply(), speak=True)
                 continue
+            if _is_time_query(user_text):
+                _quick_say(_time_reply(), speak=True)
+                continue
+            if _is_brief_command(user_text):
+                _quick_say(mentor.daily_briefing(), speak=True)
+                continue
 
-            _capture_name(user_text)
-            reply = brain.think(user_text, history)
-            save_history(history)
-            print(f"Jarvis: {reply}")
-            mouth.speak(reply)
+            _handle_input(user_text, history, speak=True)
     except KeyboardInterrupt:
         print("\n[main] Goodbye!")
         return 0
