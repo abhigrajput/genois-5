@@ -187,6 +187,71 @@ def startup_confrontation() -> str:
     return reply or _fallback_confrontation(overdue)
 
 
+def _short_mentor_line(instruction: str, fallback: str) -> str:
+    """Generate ONE short, spoken mentor line for a background nudge.
+
+    Used by the scheduler (Phase 4) for fire-and-forget prompts — a work nudge
+    or an evening check-in — that Jarvis speaks unprompted. Like
+    startup_confrontation, this deliberately does NOT touch conversation history
+    (a lone assistant turn would break the user-first ordering the chat/mentor
+    brains expect) and pulls the live commitments context so the line references
+    real deadlines. `max_tokens` is small to keep it to a sentence or two; any
+    failure degrades to `fallback` so a scheduled job still says something.
+    """
+    system = [
+        {"type": "text", "text": MENTOR_SYSTEM_PROMPT},
+        {"type": "text", "text": _format_context()},
+    ]
+    messages = [{"role": "user", "content": instruction}]
+    try:
+        resp = _client.messages.create(
+            model=config.CLAUDE_MODEL,
+            max_tokens=200,
+            system=system,
+            thinking={"type": "adaptive"},
+            messages=messages,
+            timeout=API_TIMEOUT,
+        )
+        reply = "".join(b.text for b in resp.content if b.type == "text").strip()
+    except Exception as exc:  # noqa: BLE001 - never let a background nudge crash
+        print(f"[mentor_brain] short mentor line failed: {exc}")
+        return fallback
+    return reply or fallback
+
+
+def work_nudge() -> str:
+    """A SHORT, brutal work-in-progress nudge for the periodic scheduler job.
+
+    One or two sentences asking what he has actually shipped recently, naming an
+    overdue/open commitment if there is one. Spoken unprompted mid-day.
+    """
+    instruction = (
+        "Jarvis is interrupting Abhishek mid-work to keep him honest. Say ONE or "
+        "TWO short, brutally direct sentences asking what he has actually shipped "
+        "in the last couple of hours. If something is overdue or open, name it. "
+        "No greeting, no preamble. For example: \"Abhishek, pichhle 2 ghante mein "
+        "kya ship kiya? Numbers do, excuses nahi.\""
+    )
+    fallback = "Abhishek, pichhle 2 ghante mein kya ship kiya? Numbers do, excuses nahi."
+    return _short_mentor_line(instruction, fallback)
+
+
+def evening_checkin() -> str:
+    """A SHORT end-of-day check-in line for the evening scheduler job.
+
+    Asks what he shipped today and what tomorrow's plan is, in one or two spoken
+    sentences. Naming open commitments is fine; keep it tight.
+    """
+    instruction = (
+        "It is evening and Jarvis is doing an end-of-day check-in with Abhishek. "
+        "In ONE or TWO short sentences, ask him directly what he actually shipped "
+        "today and what his concrete plan for tomorrow is. If commitments are open "
+        "or overdue, reference them. No greeting, no preamble, no fluff."
+    )
+    fallback = "Abhishek, aaj kya ship kiya, sach bata. Aur kal ka plan kya hai? Concrete bol."
+    return _short_mentor_line(instruction, fallback)
+
+
 if __name__ == "__main__":
     # Quick manual test: python -m core.mentor_brain
     convo: list[dict] = []

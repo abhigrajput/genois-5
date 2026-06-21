@@ -31,6 +31,9 @@ conversation_history.json
 # Saved user profile (name, etc.)
 user_profile.json
 
+# Scheduler cadence (may hold personal times) — schedule.example.json is tracked
+schedule.json
+
 # Editor / OS noise
 .vscode/
 .idea/

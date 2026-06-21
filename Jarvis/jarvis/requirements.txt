@@ -30,5 +30,8 @@ pygetwindow==0.0.9         # window handling for PC control
 # Accountability mentor store (Phase 3)
 supabase==2.9.1            # commitments / facts / check_ins tables
 
+# Scheduled background automation (Phase 4)
+apscheduler==3.11.0        # BackgroundScheduler for timed briefings / nudges
+
 # Config / .env loading
 python-dotenv==1.0.1
