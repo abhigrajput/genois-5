@@ -143,16 +143,43 @@ def _is_brief_command(text: str) -> bool:
     return any(trigger in lowered for trigger in _BRIEF_TRIGGERS)
 
 
+# Phrases that snooze the startup confrontation for the rest of the day. Kept
+# specific (not a bare "baad mein") so ordinary "main baad mein karunga" chatter
+# doesn't accidentally silence the mentor.
+_SNOOZE_TRIGGERS = (
+    "snooze", "stop confronting me", "stop confronting", "don't confront me",
+    "dont confront me", "no confrontation", "confront mat karo",
+    "confront mat kar", "aaj confront mat", "mujhe baad mein confront",
+)
+
+# What Jarvis says when it snoozes the confrontation — acknowledges but doesn't
+# let him off the hook for tomorrow.
+_SNOOZE_REPLY = "Theek hai, aaj ke liye chhod raha hoon. Par kal jawab dena padega — kaam karo."
+
+
+def _is_snooze_command(text: str) -> bool:
+    """True if `text` asks to snooze the startup confrontation for today."""
+    lowered = text.lower()
+    return any(trigger in lowered for trigger in _SNOOZE_TRIGGERS)
+
+
 def _confront_on_startup(speak: bool) -> None:
     """Open with the mentor's confrontation if anything is overdue.
 
     Called once after Jarvis loads (voice and text mode), before waiting for any
     input. If a commitment is overdue, the mentor immediately speaks a short,
     brutal line naming it; otherwise this is silent and Jarvis starts normally.
+
+    Fires at most once per calendar day: after it shows (or once Abhishek snoozes
+    it by hand), later restarts the same day stay silent so a string of relaunches
+    doesn't re-confront him. The snooze resets automatically the next day.
     """
+    if profile.is_confrontation_snoozed():
+        return
     opener = mentor_brain.startup_confrontation()
     if opener:
         _quick_say(opener, speak)
+        profile.snooze_confrontation()
 
 
 def _handle_input(user_text: str, history: list[dict], speak: bool) -> None:
@@ -226,6 +253,10 @@ def text_mode(mute: bool) -> int:
                 continue
             if _is_brief_command(user_text):
                 _quick_say(mentor.daily_briefing(), speak=not mute)
+                continue
+            if _is_snooze_command(user_text):
+                profile.snooze_confrontation()
+                _quick_say(_SNOOZE_REPLY, speak=not mute)
                 continue
 
             _handle_input(user_text, history, speak=not mute)
@@ -312,6 +343,10 @@ def main() -> int:
                 continue
             if _is_brief_command(user_text):
                 _quick_say(mentor.daily_briefing(), speak=True)
+                continue
+            if _is_snooze_command(user_text):
+                profile.snooze_confrontation()
+                _quick_say(_SNOOZE_REPLY, speak=True)
                 continue
 
             _handle_input(user_text, history, speak=True)

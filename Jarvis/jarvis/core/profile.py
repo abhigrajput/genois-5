@@ -8,6 +8,7 @@ conversation history because it's a long-lived fact, not a chat turn.
 import json
 import os
 import tempfile
+from datetime import date
 
 # Store the profile next to the jarvis package, regardless of the working
 # directory the app was launched from (mirrors config.py / history.py).
@@ -50,6 +51,23 @@ def set_name(name: str) -> None:
     """Remember the user's name."""
     data = _load()
     data["name"] = name
+    _save(data)
+
+
+def is_confrontation_snoozed() -> bool:
+    """True if the startup confrontation has been snoozed for today.
+
+    The mentor confronts at most once per calendar day: once it fires (or the
+    user snoozes it by hand), later restarts the same day stay silent so he isn't
+    confronted on every relaunch. Resets automatically when the date rolls over.
+    """
+    return _load().get("confrontation_snoozed_on") == date.today().isoformat()
+
+
+def snooze_confrontation() -> None:
+    """Snooze the startup confrontation for the rest of today."""
+    data = _load()
+    data["confrontation_snoozed_on"] = date.today().isoformat()
     _save(data)
 
 
