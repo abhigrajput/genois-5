@@ -28,6 +28,7 @@ import json
 import os
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.schedulers.base import STATE_RUNNING
 from apscheduler.triggers.cron import CronTrigger
 
 from core import hands, mentor, mentor_brain, mouth, phone
@@ -275,8 +276,17 @@ def resume_scheduler() -> None:
 
 
 def is_running() -> bool:
-    """True if the scheduler exists and is actively firing jobs (not paused)."""
-    return _scheduler is not None and _scheduler.running and bool(_scheduler.get_jobs())
+    """True if the scheduler exists and is actively firing jobs (not paused).
+
+    Checks state == STATE_RUNNING rather than the `.running` property: APScheduler
+    reports `.running` True even while PAUSED (it only means "not stopped"), so a
+    paused scheduler would otherwise look active to the dashboard status pill.
+    """
+    return (
+        _scheduler is not None
+        and _scheduler.state == STATE_RUNNING
+        and bool(_scheduler.get_jobs())
+    )
 
 
 if __name__ == "__main__":

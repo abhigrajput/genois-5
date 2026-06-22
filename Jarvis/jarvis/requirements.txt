@@ -36,5 +36,8 @@ apscheduler==3.11.0        # BackgroundScheduler for timed briefings / nudges
 # Phone integration (Phase 5) — Telegram bot, long-polling (no public URL needed)
 pyTelegramBotAPI==4.34.0   # import name: telebot
 
+# Local web dashboard (Phase 6) — browser control panel on 127.0.0.1 only
+flask==3.1.3               # tiny localhost control panel served on a daemon thread
+
 # Config / .env loading
 python-dotenv==1.0.1

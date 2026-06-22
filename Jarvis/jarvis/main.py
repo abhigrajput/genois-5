@@ -14,7 +14,7 @@ import threading
 from datetime import datetime
 
 import config
-from core import brain, hands, intent, mentor, mentor_brain, mouth, phone, profile, scheduler
+from core import brain, dashboard, hands, intent, mentor, mentor_brain, mouth, phone, profile, scheduler
 from core.history import clear_history, load_history, save_history
 # Note: `ear` and `wake` are imported lazily in voice mode only. Importing
 # `ear` loads the Whisper model at import time, which we must avoid in --text.
@@ -314,6 +314,11 @@ def text_mode(mute: bool) -> int:
     # Bridge the phone (Telegram) onto the SAME history, so phone and typed turns
     # share one conversation. Runs on its own polling thread; no-op if unset.
     _start_phone_bridge(history)
+    # Start the local web dashboard on its own daemon thread, sharing respond()
+    # and this history. Non-blocking; no-op if DASHBOARD_ENABLED is false.
+    url = dashboard.start_dashboard(respond, history)
+    if url:
+        print(f"[main] Dashboard: open {url} in your browser.")
 
     try:
         while True:
@@ -396,6 +401,11 @@ def main() -> int:
     # Bridge the phone (Telegram) onto the SAME history as voice turns. Runs on
     # its own polling thread; no-op if Telegram isn't configured.
     _start_phone_bridge(history)
+    # Start the local web dashboard on its own daemon thread, sharing respond()
+    # and this history. Non-blocking; no-op if DASHBOARD_ENABLED is false.
+    url = dashboard.start_dashboard(respond, history)
+    if url:
+        print(f"[main] Dashboard: open {url} in your browser.")
 
     try:
         while True:

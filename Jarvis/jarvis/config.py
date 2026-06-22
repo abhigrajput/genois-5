@@ -38,6 +38,18 @@ SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
+# --- Local web dashboard (Phase 6) ---
+# A tiny Flask control panel served on a background daemon thread, bound to
+# localhost only (never the network). Default on; set DASHBOARD_ENABLED=false in
+# .env to skip it entirely and run Phases 1-5 unchanged.
+DASHBOARD_ENABLED = os.getenv("DASHBOARD_ENABLED", "true").strip().lower() not in (
+    "false", "0", "no", "off", "",
+)
+# Bound to 127.0.0.1 deliberately — the panel is for THIS PC only and must not be
+# reachable from the network. Port is overridable in case 5000 is taken.
+DASHBOARD_HOST = "127.0.0.1"
+DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "5000"))
+
 # --- Speech-to-text (Whisper) ---
 # Language Whisper transcribes in. Auto-detect is unreliable on short int8 CPU
 # clips (it once mislabelled clean speech as Malayalam), so we pin it. Use "en"
