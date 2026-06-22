@@ -88,6 +88,51 @@ def _build_app() -> Flask:
             return jsonify({"reply": f"(error: {exc})"}), 500
         return jsonify({"reply": reply})
 
+    def _resolve_and(action_by_id, action_by_match):
+        """Shared body for the done/delete endpoints.
+
+        Accepts {"id": ...} (preferred — the panel knows each row's id) or
+        {"description": "..."} (fuzzy match), runs the matching mentor action,
+        and returns the refreshed open-commitments list so the panel updates.
+        COMMITMENTS-only — never touches files on the PC.
+        """
+        data = request.get_json(silent=True) or {}
+        commitment_id = data.get("id")
+        description = (data.get("description") or "").strip()
+
+        row = None
+        try:
+            if commitment_id is not None:
+                row = action_by_id(commitment_id)
+            elif description:
+                row = action_by_match(description)
+        except Exception as exc:  # noqa: BLE001 - surface, don't crash the panel
+            print(f"[dashboard] commitment action failed: {exc}")
+            return jsonify({"ok": False, "error": str(exc), "commitments": []}), 500
+
+        try:
+            items = mentor.get_open_commitments()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[dashboard] commitments refetch failed: {exc}")
+            items = []
+        return jsonify({"ok": row is not None, "commitments": items})
+
+    @app.route("/api/commitments/done", methods=["POST"])
+    def api_commitments_done():
+        """Mark a commitment done (by id or fuzzy description)."""
+        return _resolve_and(
+            lambda cid: mentor.mark_commitment_by_id(cid, "done"),
+            lambda desc: mentor.mark_commitment(desc, "done"),
+        )
+
+    @app.route("/api/commitments/delete", methods=["POST"])
+    def api_commitments_delete():
+        """Delete a commitment entirely (by id or fuzzy description)."""
+        return _resolve_and(
+            mentor.delete_commitment_by_id,
+            mentor.delete_commitment,
+        )
+
     @app.route("/api/schedule/pause", methods=["POST"])
     def api_schedule_pause():
         scheduler.pause_scheduler()
@@ -215,6 +260,14 @@ _PAGE = """<!doctype html>
   .commit .desc { font-size: 13px; }
   .commit .due { font-size: 11px; color: var(--muted); margin-top: 3px; }
   .commit.overdue .due { color: var(--bad); }
+  .commit .row-actions { display: flex; gap: 6px; margin-top: 8px; }
+  .commit .row-actions button {
+    padding: 4px 10px; font-size: 12px; border-radius: 6px;
+  }
+  button.done { color: var(--ok); }
+  button.done:hover { border-color: var(--ok); }
+  button.remove { color: var(--bad); }
+  button.remove:hover { border-color: var(--bad); }
   .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
   .chat { grid-column: span 1; }
   #log {
@@ -319,6 +372,11 @@ async function refreshCommitments() {
       if (it.due_date) {
         html += '<div class="due">' + (overdue ? "OVERDUE · " : "due ") + esc(it.due_date) + "</div>";
       }
+      const idAttr = JSON.stringify(it.id);
+      html += '<div class="row-actions">';
+      html += '<button class="done" onclick=\\'commitAction("done", ' + esc(idAttr) + ')\\'>Done</button>';
+      html += '<button class="remove" onclick=\\'commitAction("delete", ' + esc(idAttr) + ')\\'>Remove</button>';
+      html += "</div>";
       html += "</div>";
     }
   }
@@ -368,6 +426,22 @@ async function schedule(action) {
     await fetch("/api/schedule/" + action, { method: "POST" });
   } catch (e) {}
   addMsg("Schedule " + action + "d.", "sys");
+  refreshStatus();
+}
+
+// Mark a commitment done or remove it (Phase 7). `op` is "done" or "delete";
+// `id` is the row id so we target it exactly. Refreshes the list + counts.
+async function commitAction(op, id) {
+  if (op === "delete" && !confirm("Remove this commitment?")) return;
+  try {
+    await fetch("/api/commitments/" + op, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: id }),
+    });
+  } catch (e) {}
+  addMsg(op === "done" ? "Commitment marked done." : "Commitment removed.", "sys");
+  refreshCommitments();
   refreshStatus();
 }
 

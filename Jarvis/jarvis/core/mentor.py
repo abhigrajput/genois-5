@@ -143,18 +143,14 @@ def get_overdue_commitments() -> list[dict]:
     return resp.data or []
 
 
-def mark_commitment(description_match: str, status: str) -> dict | None:
-    """Find the closest open commitment by description and set its status.
+def _find_best_open_match(description_match: str) -> dict | None:
+    """Return the open commitment whose description best matches the query.
 
-    `status` should be 'done' or 'missed'. Matching is fuzzy (difflib) so the
-    user can say "I onboarded those users" and we still find "onboard 5 GENOIS
-    users by Friday". Returns the updated row, or None if nothing matched.
+    Matching is fuzzy (difflib) so the user can say "I onboarded those users"
+    and we still find "onboard 5 GENOIS users by Friday". Returns None when the
+    store is empty or nothing clears a low confidence floor. Shared by both
+    mark_commitment and delete_commitment so they resolve a phrase identically.
     """
-    status = (status or "").strip().lower()
-    if status not in ("done", "missed"):
-        print(f"[mentor] mark_commitment: invalid status {status!r}")
-        return None
-
     query = (description_match or "").strip().lower()
     if not query:
         return None
@@ -175,8 +171,30 @@ def mark_commitment(description_match: str, status: str) -> dict | None:
         if score > best_score:
             best, best_score = item, score
 
-    if best is None or best_score < 0.4:
-        print(f"[mentor] mark_commitment: no close match for {description_match!r}")
+    # Floor of 0.5: genuine matches get the 0.8 word-subset boost or otherwise
+    # score ~0.55+, while unrelated phrases (e.g. "buy groceries" vs "onboard 5
+    # GENOIS users") top out around 0.4. The gap matters most for delete, which
+    # is destructive — better to ask again than remove the wrong commitment.
+    if best is None or best_score < 0.5:
+        print(f"[mentor] no close open commitment for {description_match!r}")
+        return None
+    return best
+
+
+def mark_commitment(description_match: str, status: str) -> dict | None:
+    """Find the closest open commitment by description and set its status.
+
+    `status` should be 'done' or 'missed'. Matching is fuzzy (difflib) so the
+    user can say "I onboarded those users" and we still find "onboard 5 GENOIS
+    users by Friday". Returns the updated row, or None if nothing matched.
+    """
+    status = (status or "").strip().lower()
+    if status not in ("done", "missed"):
+        print(f"[mentor] mark_commitment: invalid status {status!r}")
+        return None
+
+    best = _find_best_open_match(description_match)
+    if best is None:
         return None
 
     client = _get_client()
@@ -195,6 +213,110 @@ def mark_commitment(description_match: str, status: str) -> dict | None:
     data = resp.data or []
     print(f"[mentor] Marked {best.get('description')!r} as {status}.")
     return data[0] if data else best
+
+
+def delete_commitment(description_match: str) -> dict | None:
+    """Find the closest OPEN commitment by description and delete its row.
+
+    Unlike mark_commitment (which keeps the row with a done/missed status), this
+    removes the commitment entirely — for when it was logged by mistake or is no
+    longer relevant. Matching is the same fuzzy lookup. Returns the deleted row,
+    or None if nothing matched / the store is unavailable.
+
+    NOTE: this is COMMITMENTS-only. It has nothing to do with files on the PC;
+    the no-delete-files safety on PC actions is unaffected.
+    """
+    best = _find_best_open_match(description_match)
+    if best is None:
+        return None
+
+    client = _get_client()
+    if client is None:
+        return None
+    try:
+        resp = (
+            client.table("commitments")
+            .delete()
+            .eq("id", best["id"])
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[mentor] delete_commitment failed: {exc}")
+        return None
+    print(f"[mentor] Deleted commitment {best.get('description')!r}.")
+    data = resp.data or []
+    return data[0] if data else best
+
+
+def delete_commitment_by_id(commitment_id) -> dict | None:
+    """Delete a commitment by its exact id (used by the dashboard buttons).
+
+    The dashboard already knows each row's id, so it can target one precisely
+    instead of going through fuzzy matching. Returns the deleted row or None.
+    """
+    if commitment_id is None:
+        return None
+    client = _get_client()
+    if client is None:
+        return None
+    try:
+        resp = (
+            client.table("commitments")
+            .delete()
+            .eq("id", commitment_id)
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[mentor] delete_commitment_by_id failed: {exc}")
+        return None
+    data = resp.data or []
+    print(f"[mentor] Deleted commitment id={commitment_id}.")
+    return data[0] if data else {"id": commitment_id}
+
+
+def mark_commitment_by_id(commitment_id, status: str) -> dict | None:
+    """Set a commitment's status by its exact id (used by the dashboard buttons).
+
+    `status` should be 'done' or 'missed'. Returns the updated row or None.
+    """
+    status = (status or "").strip().lower()
+    if status not in ("done", "missed"):
+        print(f"[mentor] mark_commitment_by_id: invalid status {status!r}")
+        return None
+    if commitment_id is None:
+        return None
+    client = _get_client()
+    if client is None:
+        return None
+    try:
+        resp = (
+            client.table("commitments")
+            .update({"status": status})
+            .eq("id", commitment_id)
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[mentor] mark_commitment_by_id failed: {exc}")
+        return None
+    data = resp.data or []
+    print(f"[mentor] Marked commitment id={commitment_id} as {status}.")
+    return data[0] if data else {"id": commitment_id, "status": status}
+
+
+def list_commitments_for_display() -> list[dict]:
+    """Return open commitments as lightweight {id, description, category, due_date}
+    dicts, so the user, dashboard, or mentor can refer to specific ones by id.
+    """
+    items = get_open_commitments()
+    return [
+        {
+            "id": c.get("id"),
+            "description": c.get("description") or "(no description)",
+            "category": c.get("category"),
+            "due_date": c.get("due_date"),
+        }
+        for c in items
+    ]
 
 
 def _format_commitment(item: dict, *, with_due: bool = True) -> str:

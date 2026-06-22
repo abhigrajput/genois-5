@@ -84,12 +84,16 @@ def _format_context() -> str:
     return "\n".join(parts)
 
 
-def mentor_reply(user_text: str, history: list[dict]) -> str:
+def mentor_reply(user_text: str, history: list[dict], system_note: str | None = None) -> str:
     """Generate the mentor's reply, updating `history` in place.
 
     `history` is the same shared list core/brain.py uses, so mentor and chat
-    turns interleave in one conversation. Never raises: any backend error
-    degrades to a short spoken apology so the assistant keeps talking.
+    turns interleave in one conversation. `system_note`, when given, is an
+    ephemeral instruction injected only for THIS turn (not stored in history) —
+    Phase 7 uses it to tell the mentor that a commitment was just marked
+    done/missed or deleted, so it acknowledges the change instead of being
+    confused that the item vanished from its context. Never raises: any backend
+    error degrades to a short spoken apology so the assistant keeps talking.
     """
     user_text = (user_text or "").strip()
     if not user_text:
@@ -101,6 +105,8 @@ def mentor_reply(user_text: str, history: list[dict]) -> str:
         {"type": "text", "text": MENTOR_SYSTEM_PROMPT},
         {"type": "text", "text": _format_context()},
     ]
+    if system_note:
+        system.append({"type": "text", "text": system_note})
 
     messages = list(history)
     messages.append({"role": "user", "content": user_text})

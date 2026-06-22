@@ -208,6 +208,47 @@ def _confront_on_startup(speak: bool) -> None:
 _turn_lock = threading.Lock()
 
 
+def _apply_commitment_manage(manage: dict) -> str:
+    """Apply a Phase 7 commitment management op and return a note for the mentor.
+
+    `manage` is the validated {"op": ..., "match": ...} from intent.classify.
+    "done"/"missed" go through mentor.mark_commitment; "delete" through
+    mentor.delete_commitment. Runs BEFORE the mentor generates its reply so the
+    mentor's freshly-pulled context already reflects the change. Returns a short
+    ephemeral instruction telling the mentor exactly what changed (or that the
+    lookup found nothing), which respond() passes to mentor_reply as a one-turn
+    system note so the mentor acknowledges it instead of being confused.
+
+    COMMITMENTS-only: this never touches files on the PC.
+    """
+    op = manage.get("op")
+    match = manage.get("match", "")
+
+    if op == "delete":
+        row = mentor.delete_commitment(match)
+    else:  # "done" or "missed"
+        row = mentor.mark_commitment(match, op)
+
+    if row is None:
+        return (
+            f"NOTE: Abhishek tried to mark a commitment matching '{match}' as "
+            f"'{op}', but no matching open commitment was found. Tell him you "
+            f"couldn't find it and ask which one he means."
+        )
+
+    desc = row.get("description") or match
+    if op == "delete":
+        change = f"the commitment '{desc}' has been DELETED (removed entirely)"
+    elif op == "done":
+        change = f"the commitment '{desc}' has been marked DONE (completed)"
+    else:  # missed
+        change = f"the commitment '{desc}' has been marked MISSED"
+    return (
+        f"NOTE: Just now, {change}. Acknowledge this crisply and warmly, then "
+        f"keep him moving — ask what's next. Do not list it as still open."
+    )
+
+
 def respond(user_text: str, history: list[dict]) -> str:
     """Produce Jarvis's reply for one turn, performing any side effects.
 
@@ -253,16 +294,23 @@ def respond(user_text: str, history: list[dict]) -> str:
             # untouched — actions aren't conversation turns.
             return hands.run(decision["function"], decision.get("args"))
         if decision["type"] == "mentor":
-            # Store any concrete commitment FIRST so the mentor's context (pulled
-            # fresh inside mentor_reply) already reflects what he just promised.
-            commitment = decision.get("commitment")
-            if commitment:
-                mentor.add_commitment(
-                    commitment["category"],
-                    commitment["description"],
-                    commitment.get("due_date"),
-                )
-            reply = mentor_brain.mentor_reply(user_text, history)
+            # Apply any commitment state change FIRST, so the mentor's context
+            # (pulled fresh inside mentor_reply) already reflects the new reality.
+            manage = decision.get("manage")
+            note = None
+            if manage:
+                note = _apply_commitment_manage(manage)
+            else:
+                # Store any concrete NEW commitment first, same reasoning — the
+                # mentor should already see what he just promised.
+                commitment = decision.get("commitment")
+                if commitment:
+                    mentor.add_commitment(
+                        commitment["category"],
+                        commitment["description"],
+                        commitment.get("due_date"),
+                    )
+            reply = mentor_brain.mentor_reply(user_text, history, system_note=note)
             save_history(history)
             return reply
         reply = brain.think(user_text, history)

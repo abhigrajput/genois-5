@@ -10,9 +10,11 @@ JSON only:
     {"type": "mentor", "commitment": {"category": "genois",
                                       "description": "onboard 5 GENOIS users",
                                       "due_date": "2026-06-26"}}
+    {"type": "mentor", "manage": {"op": "done", "match": "onboard 5 GENOIS users"}}
 
 main.py routes "chat" to brain.think(), "action" to hands.run(), and "mentor" to
-mentor_brain.mentor_reply() (storing any parsed commitment first). The function
+mentor_brain.mentor_reply() (storing any parsed commitment, or applying any parsed
+"manage" op, first). The function
 list and argument shapes here MUST match core/hands.py. A fast, cheap model is
 used so classifying every input adds minimal latency, and any parse failure
 falls back to {"type": "chat"} so speech is never lost.
@@ -76,6 +78,30 @@ relative to today's date given below; use null if he gave no deadline.
 Questions ABOUT goals ("how am I doing?", "brief me") are mentor WITHOUT a \
 commitment object.
 
+MANAGING EXISTING COMMITMENTS: if a mentor message is about updating or removing \
+an EXISTING commitment (not making a new one), enrich the mentor result with a \
+"manage" object instead of a "commitment" object:
+  {"type": "mentor", "manage": {"op": "<op>", "match": "<text>"}}
+- op is exactly one of: "done" (he finished/completed it), "missed" (he failed or \
+let it lapse), "delete" (remove/cancel the commitment entirely).
+- match is a short phrase identifying WHICH commitment he means, in his own words \
+(e.g. "landing page", "onboard 5 GENOIS users"); it is fuzzy-matched against his \
+saved commitments, so it need not be exact.
+Trigger "done": "mark the landing page done", "landing page done", "landing page \
+complete ho gaya", "I finished the landing page", "GENOIS users ho gaya".
+Trigger "missed": "I missed the landing page", "landing page nahi hua", "couldn't \
+do the GRE quant".
+Trigger "delete": "remove the landing page commitment", "delete the GRE \
+commitment", "landing page cancel karo", "scrap that commitment".
+CRITICAL distinction — do not mis-route:
+- A statement of INTENT to do something ("I'll finish the landing page", "I will \
+onboard users", "main kal landing page karunga") is a NEW commitment -> use the \
+"commitment" object, NOT manage.
+- A statement that something IS already done/missed, or a request to remove it \
+("landing page done", "that's finished", "delete that") -> use the "manage" \
+object. Past/completed tense or remove/cancel words mean manage; future tense or \
+"I'll/I will/I need to" means a new commitment.
+
 Rules:
 - Only choose "action" when the user clearly wants the computer to do that thing \
 ("open chrome", "chrome kholo", "search for X", "play despacito on youtube", \
@@ -102,6 +128,10 @@ _CHAT = {"type": "chat"}
 
 # Valid commitment categories, mirroring core/mentor.CATEGORIES.
 _COMMITMENT_CATEGORIES = ("genois", "ms_prep", "discipline")
+
+# Valid management ops for an existing commitment (Phase 7). "done"/"missed" map
+# to mentor.mark_commitment; "delete" maps to mentor.delete_commitment.
+_MANAGE_OPS = ("done", "missed", "delete")
 
 
 def _extract_json(raw: str) -> dict | None:
@@ -162,12 +192,32 @@ def _validate_commitment(raw) -> dict | None:
     }
 
 
+def _validate_manage(raw) -> dict | None:
+    """Coerce a parsed management object into a clean {op, match}, or None."""
+    if not isinstance(raw, dict):
+        return None
+    op = raw.get("op")
+    if not isinstance(op, str) or op.strip().lower() not in _MANAGE_OPS:
+        return None
+    match = raw.get("match")
+    if not isinstance(match, str) or not match.strip():
+        return None
+    return {"op": op.strip().lower(), "match": match.strip()}
+
+
 def _validate(data: dict) -> dict:
     """Coerce a parsed intent into a known-good shape, defaulting to chat."""
     kind = data.get("type")
 
     if kind == "mentor":
         result = {"type": "mentor"}
+        # A turn is either managing an existing commitment OR (at most) creating
+        # a new one — never both. Prefer manage so "X is done" isn't also stored
+        # as a fresh commitment if the model emits both keys.
+        manage = _validate_manage(data.get("manage"))
+        if manage is not None:
+            result["manage"] = manage
+            return result
         commitment = _validate_commitment(data.get("commitment"))
         if commitment is not None:
             result["commitment"] = commitment
@@ -241,5 +291,8 @@ if __name__ == "__main__":
     for t in ["open chrome", "kaise ho?", "play tum hi ho on youtube",
               "volume up karo", "what's the capital of France", "le ek screenshot",
               "I'll onboard 5 GENOIS users by Friday", "brief me",
-              "how am I doing on my MS prep?", "mujhe brief karo"]:
+              "how am I doing on my MS prep?", "mujhe brief karo",
+              "landing page done", "GENOIS users complete ho gaya",
+              "delete the landing page commitment", "landing page cancel karo",
+              "I'll finish the landing page by tomorrow"]:
         print(f"{t!r:45} -> {classify(t)}")
