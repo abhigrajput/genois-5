@@ -30,6 +30,14 @@ MINIMAX_GROUP_ID = os.getenv("MINIMAX_GROUP_ID", "")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
 
+# --- Telegram (phone integration, Phase 5) ---
+# Two-way bridge to your phone via a Telegram bot. TELEGRAM_BOT_TOKEN comes from
+# @BotFather; TELEGRAM_CHAT_ID is YOUR chat id (the only chat Jarvis will act on
+# — message the bot once and the console logs your id so you can paste it here).
+# Both blank -> phone integration is off and Phases 1-4 work unchanged.
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
 # --- Speech-to-text (Whisper) ---
 # Language Whisper transcribes in. Auto-detect is unreliable on short int8 CPU
 # clips (it once mislabelled clean speech as Malayalam), so we pin it. Use "en"
@@ -52,6 +60,16 @@ def mentor_enabled() -> bool:
     safe no-ops so Phase 1+2 (chat and PC control) keep working without keys.
     """
     return bool(SUPABASE_URL and SUPABASE_SERVICE_KEY)
+
+
+def telegram_enabled() -> bool:
+    """True if a Telegram bot token is set, so Phase 5 phone integration runs.
+
+    Only the token is required to start polling — the bot logs the chat id of
+    anyone who messages it so the owner can set TELEGRAM_CHAT_ID. Outbound sends
+    and acting on inbound messages additionally require TELEGRAM_CHAT_ID.
+    """
+    return bool(TELEGRAM_BOT_TOKEN)
 
 
 def validate() -> list[str]:

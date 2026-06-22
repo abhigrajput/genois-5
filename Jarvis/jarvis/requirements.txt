@@ -33,5 +33,8 @@ supabase==2.9.1            # commitments / facts / check_ins tables
 # Scheduled background automation (Phase 4)
 apscheduler==3.11.0        # BackgroundScheduler for timed briefings / nudges
 
+# Phone integration (Phase 5) — Telegram bot, long-polling (no public URL needed)
+pyTelegramBotAPI==4.34.0   # import name: telebot
+
 # Config / .env loading
 python-dotenv==1.0.1

@@ -30,7 +30,7 @@ import os
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from core import hands, mentor, mentor_brain, mouth
+from core import hands, mentor, mentor_brain, mouth, phone
 
 # schedule.json lives next to the jarvis package (core/ -> jarvis/), independent
 # of the current working directory the app was launched from.
@@ -107,13 +107,19 @@ def _parse_hhmm(value: str, default: str) -> tuple[int, int]:
 
 
 def _say(text: str) -> None:
-    """Print a scheduled message and speak it (when speaking is enabled)."""
+    """Announce a scheduled message: print, speak (if enabled), and push to phone.
+
+    The phone push (Phase 5) is best-effort and independent of the local `_speak`
+    flag — the whole point is to reach you when you're away from the PC. It's a
+    no-op when Telegram isn't configured.
+    """
     text = (text or "").strip()
     if not text:
         return
     print(f"\n[scheduler] Jarvis: {text}")
     if _speak:
         mouth.speak(text)
+    phone.send(text)
 
 
 # --- Job bodies. Each is self-contained and swallows its own errors so a single
@@ -127,12 +133,17 @@ def _job_morning_briefing() -> None:
 
 
 def _job_morning_apps(apps: list[str]) -> None:
+    opened = []
     for app in apps:
         try:
             result = hands.open_app(app)
             print(f"[scheduler] morning_apps: {result}")
+            opened.append(app)
         except Exception as exc:  # noqa: BLE001
             print(f"[scheduler] morning_apps job failed for {app!r}: {exc}")
+    # Let the phone know what was launched (no-op if Telegram isn't configured).
+    if opened:
+        phone.send("Morning apps opened: " + ", ".join(opened))
 
 
 def _job_work_nudge() -> None:

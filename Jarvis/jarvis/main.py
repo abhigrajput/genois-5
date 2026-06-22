@@ -10,10 +10,11 @@ and Whisper). Add --mute to also skip speaking, for fast brain testing.
 import argparse
 import re
 import sys
+import threading
 from datetime import datetime
 
 import config
-from core import brain, hands, intent, mentor, mentor_brain, mouth, profile, scheduler
+from core import brain, hands, intent, mentor, mentor_brain, mouth, phone, profile, scheduler
 from core.history import clear_history, load_history, save_history
 # Note: `ear` and `wake` are imported lazily in voice mode only. Importing
 # `ear` loads the Whisper model at import time, which we must avoid in --text.
@@ -71,14 +72,6 @@ def _is_forget_command(text: str) -> bool:
     """True if `text` is a request to wipe the conversation memory."""
     lowered = text.lower()
     return any(trigger in lowered for trigger in _FORGET_TRIGGERS)
-
-
-def _handle_forget(history: list[dict], speak: bool) -> None:
-    """Wipe in-memory and on-disk history plus the profile, then acknowledge."""
-    history.clear()          # empties the list brain.think() shares
-    clear_history()          # deletes the saved history file
-    profile.clear_profile()  # also forget the user's name
-    _quick_say(_FORGET_REPLY, speak)
 
 
 def _is_name_query(text: str) -> bool:
@@ -209,38 +202,97 @@ def _confront_on_startup(speak: bool) -> None:
         profile.snooze_confrontation()
 
 
-def _handle_input(user_text: str, history: list[dict], speak: bool) -> None:
-    """Route a normal turn: a PC action runs via hands, else brain.think() talks.
+# Serializes turn handling so a phone (Telegram) turn on the polling thread and a
+# local voice/text turn can never mutate the shared history — or hit the LLMs —
+# at the same time.
+_turn_lock = threading.Lock()
 
-    Quick replies (forget/name/time) are handled by the callers before this; by
-    the time we get here the turn is either a computer command or conversation.
+
+def respond(user_text: str, history: list[dict]) -> str:
+    """Produce Jarvis's reply for one turn, performing any side effects.
+
+    This is the single routing brain shared by the local voice/text loops AND the
+    Telegram phone bridge. It handles the quick commands (forget / name / time /
+    briefing / snooze / schedule) first, then classifies the turn into a PC action,
+    a mentor turn, or plain chat. It returns the reply TEXT only — callers decide
+    whether to print it, speak it, and/or send it to the phone. Serialized so
+    phone and local turns can't interleave on the shared history.
     """
-    _capture_name(user_text)
+    user_text = (user_text or "").strip()
+    if not user_text:
+        return ""
 
-    decision = intent.classify(user_text)
-    if decision["type"] == "action":
-        # Run the command, then speak a short confirmation. History is left
-        # untouched — actions aren't conversation turns.
-        reply = hands.run(decision["function"], decision.get("args"))
-    elif decision["type"] == "mentor":
-        # Store any concrete commitment FIRST so the mentor's context (pulled
-        # fresh inside mentor_reply) already reflects what he just promised.
-        commitment = decision.get("commitment")
-        if commitment:
-            mentor.add_commitment(
-                commitment["category"],
-                commitment["description"],
-                commitment.get("due_date"),
-            )
-        reply = mentor_brain.mentor_reply(user_text, history)
-        save_history(history)
-    else:
+    with _turn_lock:
+        # --- Quick commands: answered directly, no intent/LLM round-trip. ---
+        if _is_forget_command(user_text):
+            history.clear()          # empties the list brain.think() shares
+            clear_history()          # deletes the saved history file
+            profile.clear_profile()  # also forget the user's name
+            return _FORGET_REPLY
+        if _is_name_query(user_text):
+            return _name_reply()
+        if _is_time_query(user_text):
+            return _time_reply()
+        if _is_brief_command(user_text):
+            return mentor.daily_briefing()
+        if _is_snooze_command(user_text):
+            profile.snooze_confrontation()
+            return _SNOOZE_REPLY
+        if _is_pause_schedule_command(user_text):
+            scheduler.pause_scheduler()
+            return _PAUSE_SCHEDULE_REPLY
+        if _is_resume_schedule_command(user_text):
+            scheduler.resume_scheduler()
+            return _RESUME_SCHEDULE_REPLY
+
+        # --- Normal turn: PC action via hands, mentor, or chat via brain. ---
+        _capture_name(user_text)
+        decision = intent.classify(user_text)
+        if decision["type"] == "action":
+            # Run the command and return its short confirmation. History is left
+            # untouched — actions aren't conversation turns.
+            return hands.run(decision["function"], decision.get("args"))
+        if decision["type"] == "mentor":
+            # Store any concrete commitment FIRST so the mentor's context (pulled
+            # fresh inside mentor_reply) already reflects what he just promised.
+            commitment = decision.get("commitment")
+            if commitment:
+                mentor.add_commitment(
+                    commitment["category"],
+                    commitment["description"],
+                    commitment.get("due_date"),
+                )
+            reply = mentor_brain.mentor_reply(user_text, history)
+            save_history(history)
+            return reply
         reply = brain.think(user_text, history)
         save_history(history)
+        return reply
 
-    print(f"Jarvis: {reply}")
-    if speak:
-        mouth.speak(reply)
+
+def _handle_input(user_text: str, history: list[dict], speak: bool) -> None:
+    """Local-turn wrapper: route via respond(), then print and optionally speak."""
+    reply = respond(user_text, history)
+    if reply:
+        print(f"Jarvis: {reply}")
+        if speak:
+            mouth.speak(reply)
+
+
+def _start_phone_bridge(history: list[dict]) -> None:
+    """Start the Telegram bridge so phone messages route through respond().
+
+    The reply is sent back to the phone (and echoed to the console) but NOT spoken
+    on the PC — phone turns are for when you're away. No-op if Telegram is unset.
+    """
+    def handle(text: str) -> str:
+        reply = respond(text, history)
+        if reply:
+            print(f"[phone] Jarvis: {reply}")
+        return reply
+
+    if phone.start_phone(handle):
+        print("[main] Phone bridge active (Telegram).")
 
 
 def text_mode(mute: bool) -> int:
@@ -259,6 +311,9 @@ def text_mode(mute: bool) -> int:
     # don't talk over each other on launch. Jobs run on their own thread, so the
     # input loop below keeps accepting typing while they fire.
     scheduler.start_scheduler(speak=not mute)
+    # Bridge the phone (Telegram) onto the SAME history, so phone and typed turns
+    # share one conversation. Runs on its own polling thread; no-op if unset.
+    _start_phone_bridge(history)
 
     try:
         while True:
@@ -273,31 +328,7 @@ def text_mode(mute: bool) -> int:
                 return 0
             if not user_text:
                 continue
-            if _is_forget_command(user_text):
-                _handle_forget(history, speak=not mute)
-                continue
-            if _is_name_query(user_text):
-                _quick_say(_name_reply(), speak=not mute)
-                continue
-            if _is_time_query(user_text):
-                _quick_say(_time_reply(), speak=not mute)
-                continue
-            if _is_brief_command(user_text):
-                _quick_say(mentor.daily_briefing(), speak=not mute)
-                continue
-            if _is_snooze_command(user_text):
-                profile.snooze_confrontation()
-                _quick_say(_SNOOZE_REPLY, speak=not mute)
-                continue
-            if _is_pause_schedule_command(user_text):
-                scheduler.pause_scheduler()
-                _quick_say(_PAUSE_SCHEDULE_REPLY, speak=not mute)
-                continue
-            if _is_resume_schedule_command(user_text):
-                scheduler.resume_scheduler()
-                _quick_say(_RESUME_SCHEDULE_REPLY, speak=not mute)
-                continue
-
+            # respond() (inside _handle_input) handles quick commands + routing.
             _handle_input(user_text, history, speak=not mute)
     except KeyboardInterrupt:
         print("\n[main] Goodbye!")
@@ -362,6 +393,9 @@ def main() -> int:
     # Start the background scheduler AFTER the startup confrontation. Jobs fire
     # on their own thread, so the wake-word loop below is never blocked by them.
     scheduler.start_scheduler(speak=True)
+    # Bridge the phone (Telegram) onto the SAME history as voice turns. Runs on
+    # its own polling thread; no-op if Telegram isn't configured.
+    _start_phone_bridge(history)
 
     try:
         while True:
@@ -374,31 +408,7 @@ def main() -> int:
                 continue
 
             print(f"You: {user_text}")
-            if _is_forget_command(user_text):
-                _handle_forget(history, speak=True)
-                continue
-            if _is_name_query(user_text):
-                _quick_say(_name_reply(), speak=True)
-                continue
-            if _is_time_query(user_text):
-                _quick_say(_time_reply(), speak=True)
-                continue
-            if _is_brief_command(user_text):
-                _quick_say(mentor.daily_briefing(), speak=True)
-                continue
-            if _is_snooze_command(user_text):
-                profile.snooze_confrontation()
-                _quick_say(_SNOOZE_REPLY, speak=True)
-                continue
-            if _is_pause_schedule_command(user_text):
-                scheduler.pause_scheduler()
-                _quick_say(_PAUSE_SCHEDULE_REPLY, speak=True)
-                continue
-            if _is_resume_schedule_command(user_text):
-                scheduler.resume_scheduler()
-                _quick_say(_RESUME_SCHEDULE_REPLY, speak=True)
-                continue
-
+            # respond() (inside _handle_input) handles quick commands + routing.
             _handle_input(user_text, history, speak=True)
     except KeyboardInterrupt:
         print("\n[main] Goodbye!")
